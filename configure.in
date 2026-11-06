@@ -1220,6 +1220,7 @@ target_bootloader="none"
 PLATFORM_EXECSMP=
 ENABLE_EXECSMP=
 PLATFORM_EXECWXSEG=
+PLATFORM_RISCVMODE=
 
 #-----------------------------------------------------------------------------
 # Classic variant is possible for Amiga target.
@@ -2203,6 +2204,8 @@ case "$target_os" in
     opensbi)
         aros_flavour="standalone"
         aros_target_arch="opensbi"
+        dnl the kernel runs in S-mode, under the SBI firmware
+        aros_target_cpu_mode="supervisor"
         aros_isa_flags="$""(ISA_RISCV_FLAGS)"
         aros_shared_default="no"
         llvm_target_cpu="RISCV"
@@ -3057,6 +3060,27 @@ case "$aros_target_cpu" in
         ;;
     riscv*)
         aros_isa_extra="$riscv_isa_extra$export_newline"
+
+        dnl The privilege mode the kernel runs in: shared riscv code takes
+        dnl its CSRs and bits from asm/cpu.h by the define it gets
+        AC_MSG_CHECKING([which RISC-V privilege mode to use])
+        if test "$aros_target_cpu_mode" = ""; then
+            aros_target_cpu_mode="supervisor"
+            AC_MSG_RESULT([Defaulting to $aros_target_cpu_mode])
+        else
+            AC_MSG_RESULT([$aros_target_cpu_mode])
+        fi
+
+        case "$aros_target_cpu_mode" in
+        supervisor)
+        ;;
+        machine)
+            PLATFORM_RISCVMODE="#define __AROSPLATFORM_RISCV_MMODE__"
+        ;;
+        *)
+            AC_MSG_ERROR([Unsupported RISC-V mode specified $aros_target_cpu_mode])
+        ;;
+        esac
         ;;
 esac
 
@@ -4499,6 +4523,7 @@ AC_SUBST(aros_serial_debug)
 AC_SUBST(PLATFORM_EXECSMP)
 AC_SUBST(ENABLE_EXECSMP)
 AC_SUBST(PLATFORM_EXECWXSEG)
+AC_SUBST(PLATFORM_RISCVMODE)
 
 # MMU related
 AC_SUBST(aros_enable_mmu)

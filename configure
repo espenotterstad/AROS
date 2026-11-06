@@ -675,6 +675,7 @@ host_has_libelf
 host_has_lzma
 target_grub2_version
 aros_enable_mmu
+PLATFORM_RISCVMODE
 PLATFORM_EXECWXSEG
 ENABLE_EXECSMP
 PLATFORM_EXECSMP
@@ -10228,6 +10229,7 @@ target_bootloader="none"
 PLATFORM_EXECSMP=
 ENABLE_EXECSMP=
 PLATFORM_EXECWXSEG=
+PLATFORM_RISCVMODE=
 
 #-----------------------------------------------------------------------------
 # Classic variant is possible for Amiga target.
@@ -11369,6 +11371,7 @@ printf '%s\n' "$darwin_sdk_path" >&6; }
     opensbi)
         aros_flavour="standalone"
         aros_target_arch="opensbi"
+                aros_target_cpu_mode="supervisor"
         aros_isa_flags="$""(ISA_RISCV_FLAGS)"
         aros_shared_default="no"
         llvm_target_cpu="RISCV"
@@ -12864,6 +12867,28 @@ printf '%s\n' "$aros_target_cpu_mode" >&6; }
         ;;
     riscv*)
         aros_isa_extra="$riscv_isa_extra$export_newline"
+
+                        { printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking which RISC-V privilege mode to use" >&5
+printf %s "checking which RISC-V privilege mode to use... " >&6; }
+        if test "$aros_target_cpu_mode" = ""; then
+            aros_target_cpu_mode="supervisor"
+            { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: Defaulting to $aros_target_cpu_mode" >&5
+printf '%s\n' "Defaulting to $aros_target_cpu_mode" >&6; }
+        else
+            { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: $aros_target_cpu_mode" >&5
+printf '%s\n' "$aros_target_cpu_mode" >&6; }
+        fi
+
+        case "$aros_target_cpu_mode" in
+        supervisor)
+        ;;
+        machine)
+            PLATFORM_RISCVMODE="#define __AROSPLATFORM_RISCV_MMODE__"
+        ;;
+        *)
+            as_fn_error $? "Unsupported RISC-V mode specified $aros_target_cpu_mode" "$LINENO" 5
+        ;;
+        esac
         ;;
 esac
 
@@ -20146,6 +20171,7 @@ fi
 
 
 # Native version related
+
 
 
 

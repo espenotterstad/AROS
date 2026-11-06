@@ -3,8 +3,8 @@
 /*
     Copyright (C) 2026, The AROS Development Team. All rights reserved.
 
-    Desc: Shared declarations for native (supervisor-mode) RISC-V
-          kernels.
+    Desc: Shared declarations for native (supervisor- or machine-mode)
+          RISC-V kernels.
 
     riscv-native holds the firmware-independent part of the kernel:
     per-hart TLS, the CPU numbering and masks, spinlocks, the SMP
@@ -18,6 +18,7 @@
 #include <aros/config.h>
 #include <exec/types.h>
 #include <inttypes.h>
+#include <asm/cpu.h>
 
 #include "tls.h"
 
@@ -53,6 +54,19 @@ struct RISCV_Implementation
     void    (*RVI_StopCPU)(void);
     /* rdtime ticks per second */
     UQUAD   RVI_TimebaseFreq;
+#if defined(__AROSPLATFORM_RISCV_MMODE__)
+    /*
+     * Clear the calling hart's software interrupt: mip.MSIP is
+     * read-only, so the platform writes the hart's msip word.
+     */
+    void    (*RVI_AckIPI)(void);
+    /*
+     * The memory-mapped 64-bit mtime counter, read by krnRVTime() in
+     * place of the time CSR (not every M-mode core has one). Set before
+     * the first read.
+     */
+    volatile ULONG *RVI_MTime;
+#endif
 };
 
 #if defined(__AROSEXEC_SMP__)
@@ -67,6 +81,35 @@ void krnRVResetCPUs(void);
 #endif
 
 extern struct RISCV_Implementation __riscv_arosintern;
+
+/*
+ * The time counter, RVI_TimebaseFreq ticks per second: KRN_RV_RDTIME(v)
+ * stores it in the UQUAD lvalue v. S-mode reads the time CSR; M-mode
+ * reads mtime from memory, as Hazard3 (RP2350) has no time CSR and
+ * emulating it would trap on every read.
+ */
+#if defined(__AROSPLATFORM_RISCV_MMODE__)
+static inline UQUAD krnRVMTime(void)
+{
+    volatile ULONG *mt = __riscv_arosintern.RVI_MTime;
+#if __riscv_xlen == 32
+    ULONG hi, lo;
+
+    do
+    {
+        hi = mt[1];
+        lo = mt[0];
+    } while (hi != mt[1]);
+    return ((UQUAD)hi << 32) | lo;
+#else
+    return *(volatile UQUAD *)mt;
+#endif
+}
+
+#define KRN_RV_RDTIME(v)    ((v) = krnRVMTime())
+#else
+#define KRN_RV_RDTIME(v)    asm volatile("rdtime %0" : "=r"(v))
+#endif
 
 /*
  * Logical CPU numbering. CPU 0 is the boot hart; the others are
@@ -139,23 +182,24 @@ extern int __riscv64_trap_depth;
 #endif
 
 /*
- * Mask out supervisor interrupts on this hart, returning whether they
- * were enabled. On RISC-V the IPI is an ordinary supervisor interrupt
- * (SSI), so this also holds off the IPI handler - there is no separate
- * FIQ-like level to mask as on ARM.
+ * Mask out interrupts on this hart, returning whether they were
+ * enabled. On RISC-V the IPI is an ordinary software interrupt (SSI, or
+ * MSI in M-mode), so this also holds off the IPI handler - there is no
+ * separate FIQ-like level to mask as on ARM.
  */
 static inline unsigned int krnRVIntrDisable(void)
 {
     unsigned long old;
 
-    asm volatile("csrrci %0, sstatus, 2" : "=r"(old) :: "memory");
-    return (unsigned int)(old & 2);
+    asm volatile("csrrci %0, " csr_name(CSR_STATUS) ", %1"
+                 : "=r"(old) : "K"(STATUS_IE) : "memory");
+    return (unsigned int)(old & STATUS_IE);
 }
 
 static inline void krnRVIntrRestore(unsigned int prev)
 {
     if (prev)
-        asm volatile("csrsi sstatus, 2" ::: "memory");
+        csr_set_imm(CSR_STATUS, STATUS_IE);
 }
 
 /* Spin-wait hint (Zihintpause, part of RVA22; a nop elsewhere) */

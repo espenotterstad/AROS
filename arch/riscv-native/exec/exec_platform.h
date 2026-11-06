@@ -25,6 +25,7 @@
 #define SCHEDQUANTUM_VALUE      4
 
 #include <aros/atomic.h>
+#include <asm/cpu.h>
 #include <aros/types/spinlock_s.h>
 #include <utility/hooks.h>
 
@@ -56,21 +57,23 @@ extern void Exec_SuicideSwitch(void);
 
 /*
  * Interrupt masking around tc_SpinLock / scheduler-list sections. The
- * IPI is an ordinary supervisor interrupt here (SSI), masked by
- * sstatus.SIE like every other, so the "FIQ" and "IRQ+FIQ" pairs that
- * rom/exec and the scheduler use are the same operation. They nest:
- * each returns the previous enable state for its restore.
+ * IPI is an ordinary software interrupt here (SSI, or MSI in M-mode),
+ * masked by the status register's IE bit like every other, so the "FIQ"
+ * and "IRQ+FIQ" pairs that rom/exec and the scheduler use are the same
+ * operation. They nest: each returns the previous enable state for its
+ * restore.
  *
  * Because the IPI is an ordinary interrupt, signal_hook may call the
  * full Signal(): __AROSEXEC_IPI_RESTRICTED_CTX__ is not defined.
  */
 #define EXEC_FIQ_DISABLE() \
     ({ unsigned long __ss; \
-       asm volatile("csrrci %0, sstatus, 2" : "=r"(__ss) :: "memory"); \
-       (unsigned int)(__ss & 2); })
+       asm volatile("csrrci %0, " csr_name(CSR_STATUS) ", %1" \
+                    : "=r"(__ss) : "K"(STATUS_IE) : "memory"); \
+       (unsigned int)(__ss & STATUS_IE); })
 
 #define EXEC_FIQ_RESTORE(prev) \
-    do { if (prev) asm volatile("csrsi sstatus, 2" ::: "memory"); } while(0)
+    do { if (prev) csr_set_imm(CSR_STATUS, STATUS_IE); } while(0)
 
 #define EXEC_IRQFIQ_DISABLE()       EXEC_FIQ_DISABLE()
 #define EXEC_IRQFIQ_RESTORE(prev)   EXEC_FIQ_RESTORE(prev)

@@ -90,10 +90,10 @@ static inline void ipiq_unlock(struct CPUIPIData *cid, unsigned int prev)
 
 static inline BOOL core_IntrMasked(void)
 {
-    unsigned long sstatus;
+    unsigned long status;
 
-    asm volatile("csrr %0, sstatus" : "=r"(sstatus));
-    return !(sstatus & 2);
+    asm volatile("csrr %0, " csr_name(CSR_STATUS) : "=r"(status));
+    return !(status & STATUS_IE);
 }
 
 /*
@@ -390,7 +390,7 @@ static void core_HandleCallHookIPI(uint32_t cpu)
     EXEC_BLOCK_DISPATCH_DEC;
 }
 
-/* Supervisor software interrupt: called from the trap dispatch */
+/* Software interrupt (SSI, or MSI in M-mode): called from the trap dispatch */
 void core_IPIHandle(void)
 {
     uint32_t cpu = krnRVCPUNumber();
@@ -398,7 +398,11 @@ void core_IPIHandle(void)
     ULONG msg;
 
     /* Acknowledge first, so a post that lands from here on interrupts again */
+#if defined(__AROSPLATFORM_RISCV_MMODE__)
+    __riscv_arosintern.RVI_AckIPI();
+#else
     asm volatile("csrc sip, %0" :: "r"(2UL) : "memory");
+#endif
 
     if (!cid)
         return;

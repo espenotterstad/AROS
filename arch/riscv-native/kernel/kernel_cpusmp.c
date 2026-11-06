@@ -54,7 +54,7 @@ static inline UQUAD krnRVTime(void)
 {
     UQUAD v;
 
-    asm volatile("rdtime %0" : "=r"(v));
+    KRN_RV_RDTIME(v);
     return v;
 }
 
@@ -113,7 +113,7 @@ void __attribute__((noreturn)) cpu_Register(void)
         KrnGetCPUMask(cpunum, PrivExecBase(SysBase)->CPUMask);
 
     /* Inter-processor interrupts, then this hart's own tick */
-    asm volatile("csrs sie, %0" :: "r"(2UL) : "memory");    /* SIE.SSIE */
+    asm volatile("csrs " csr_name(CSR_IE) ", %0" :: "r"(IE_SOFT) : "memory");
     if (__riscv_arosintern.RVI_InitTimerCore)
         __riscv_arosintern.RVI_InitTimerCore();
 
