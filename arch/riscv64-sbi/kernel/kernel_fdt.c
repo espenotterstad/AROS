@@ -59,6 +59,104 @@ static uint64_t read_cells(const uint32_t *p, uint32_t cells)
     return v;
 }
 
+/*
+ * The properties of a depth-3 node that are wanted if it turns out to
+ * be the PLIC. That is only known once the whole node has been seen,
+ * as "compatible" may come after the others.
+ */
+struct fdt_plic_node
+{
+    const uint32_t *reg, *ndev, *compat, *intext;
+    uint32_t        compatlen, intextlen;
+};
+
+/* A list of NUL-separated strings: is one of them s? */
+static int fdt_has_string(const uint32_t *val, uint32_t len, const char *s)
+{
+    const char *c = (const char *)val, *e = c + len;
+
+    while (c < e)
+    {
+        if (str_eq(c, s))
+            return 1;
+        while (c < e && *c)
+            c++;
+        c++;
+    }
+    return 0;
+}
+
+/*
+ * Is this node the PLIC? Either it is named "plic@", or its compatible
+ * list names one: the two generic strings, or UltraRISC's (its binding
+ * lists neither generic one). Current QEMU names it
+ * "interrupt-controller@", as it does the APLIC and IMSIC, so that name
+ * alone says nothing.
+ */
+static int fdt_is_plic(const char *name, const struct fdt_plic_node *n)
+{
+    if (str_prefix(name, "plic@"))
+        return 1;
+    if (!n->compat)
+        return 0;
+    return fdt_has_string(n->compat, n->compatlen, "riscv,plic0") ||
+           fdt_has_string(n->compat, n->compatlen, "sifive,plic-1.0.0") ||
+           fdt_has_string(n->compat, n->compatlen, "ultrarisc,cp100-plic");
+}
+
+static void fdt_read_plic(const struct fdt_plic_node *n,
+                          struct krnFDTInfo *info, uint32_t addr_cells,
+                          uint32_t size_cells, int boot_cpu_index)
+{
+    if (n->reg)
+    {
+        info->plic_base = read_cells(n->reg, addr_cells);
+        info->plic_size = read_cells(n->reg + addr_cells, size_cells);
+    }
+    if (n->ndev)
+        info->plic_ndev = be32(*n->ndev);
+    if (n->compat)
+    {
+        /* A list of NUL-separated strings; the vendor prefix is enough */
+        const char *s = (const char *)n->compat, *e = s + n->compatlen;
+
+        while (s < e)
+        {
+            if (str_prefix(s, "ultrarisc,"))
+                info->plic_quirks |= KRN_PLIC_QUIRK_CLAIM;
+            while (s < e && *s)
+                s++;
+            s++;
+        }
+    }
+    if (n->intext)
+    {
+        /*
+         * Pairs of (interrupt controller phandle, cause). Each
+         * pair is one PLIC context, numbered by its position.
+         * Cause 9 is a supervisor external interrupt - the one
+         * this kernel runs in - and the contexts appear in the
+         * same order as the cpu nodes.
+         */
+        const uint32_t *val = n->intext;
+        uint32_t npairs = n->intextlen / 8, i, seen = 0;
+
+        for (i = 0; i < npairs; i++)
+        {
+            if (be32(val[i * 2 + 1]) != 9)
+                continue;
+
+            if (info->plic_ncontexts < KRN_MAX_PLIC_CONTEXTS)
+                info->plic_contexts[info->plic_ncontexts++] =
+                    (int)i;
+
+            if ((int)seen == boot_cpu_index)
+                info->plic_context = (int)i;
+            seen++;
+        }
+    }
+}
+
 int krnParseFDT(void *dtb, struct krnFDTInfo *info)
 {
     const struct fdt_header *hdr = dtb;
@@ -71,6 +169,7 @@ int krnParseFDT(void *dtb, struct krnFDTInfo *info)
     /* Which cpu@ node the hart we booted on is, so the right
        supervisor context can be picked out of the PLIC's list */
     int boot_cpu_index = 0;
+    struct fdt_plic_node plic;
 
     info->mem_base = 0;
     info->mem_size = 0;
@@ -120,10 +219,15 @@ int krnParseFDT(void *dtb, struct krnFDTInfo *info)
 
             if (depth == 3 && str_eq(node1, "cpus") && str_prefix(node2, "cpu@"))
                 info->ncpus++;
+            if (depth == 3)
+                plic.reg = plic.ndev = plic.compat = plic.intext = (void *)0;
             break;
         }
 
         case FDT_END_NODE:
+            if (depth == 3 && fdt_is_plic(node2, &plic))
+                fdt_read_plic(&plic, info, addr_cells, size_cells,
+                              boot_cpu_index);
             depth--;
             break;
 
@@ -188,56 +292,22 @@ int krnParseFDT(void *dtb, struct krnFDTInfo *info)
                     info->boot_cpu = boot_cpu_index;
                 }
             }
-            else if (depth == 3 && str_prefix(node2, "plic@") &&
-                     str_eq(pname, "reg"))
+            else if (depth == 3)
             {
-                info->plic_base = read_cells(val, addr_cells);
-                info->plic_size = read_cells(val + addr_cells, size_cells);
-            }
-            else if (depth == 3 && str_prefix(node2, "plic@") &&
-                     str_eq(pname, "riscv,ndev"))
-            {
-                info->plic_ndev = be32(*val);
-            }
-            else if (depth == 3 && str_prefix(node2, "plic@") &&
-                     str_eq(pname, "compatible"))
-            {
-                /* A list of NUL-separated strings; the vendor prefix is enough */
-                const char *s = (const char *)val, *e = s + len;
-
-                while (s < e)
+                /* Kept until the node ends, in case it is the PLIC */
+                if (str_eq(pname, "reg"))
+                    plic.reg = val;
+                else if (str_eq(pname, "riscv,ndev"))
+                    plic.ndev = val;
+                else if (str_eq(pname, "compatible"))
                 {
-                    if (str_prefix(s, "ultrarisc,"))
-                        info->plic_quirks |= KRN_PLIC_QUIRK_CLAIM;
-                    while (s < e && *s)
-                        s++;
-                    s++;
+                    plic.compat = val;
+                    plic.compatlen = len;
                 }
-            }
-            else if (depth == 3 && str_prefix(node2, "plic@") &&
-                     str_eq(pname, "interrupts-extended"))
-            {
-                /*
-                 * Pairs of (interrupt controller phandle, cause). Each
-                 * pair is one PLIC context, numbered by its position.
-                 * Cause 9 is a supervisor external interrupt - the one
-                 * this kernel runs in - and the contexts appear in the
-                 * same order as the cpu nodes.
-                 */
-                uint32_t npairs = len / 8, i, seen = 0;
-
-                for (i = 0; i < npairs; i++)
+                else if (str_eq(pname, "interrupts-extended"))
                 {
-                    if (be32(val[i * 2 + 1]) != 9)
-                        continue;
-
-                    if (info->plic_ncontexts < KRN_MAX_PLIC_CONTEXTS)
-                        info->plic_contexts[info->plic_ncontexts++] =
-                            (int)i;
-
-                    if ((int)seen == boot_cpu_index)
-                        info->plic_context = (int)i;
-                    seen++;
+                    plic.intext = val;
+                    plic.intextlen = len;
                 }
             }
             else if (depth == 2 && str_eq(node1, "chosen") &&
